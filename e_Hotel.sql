@@ -515,7 +515,7 @@ CREATE VIEW public.available_rooms_per_area AS
    FROM (("HotelDepartments".hotel hd
      LEFT JOIN "HotelDepartments".rooms r ON ((hd.dp_id = r.dp_id)))
      LEFT JOIN "Booking".booking b ON (((r.room_no = b.room_id) AND (hd.dp_id = b.dp_id) AND (b.booking_end_date >= CURRENT_DATE))))
-  WHERE (b.booking_id IS NULL)
+  WHERE ((b.booking_id IS NULL) OR (b.booking_end_date < CURRENT_DATE))
   GROUP BY hd.dp_id, hd.dp_address
   ORDER BY hd.dp_id;
 
@@ -700,13 +700,6 @@ CREATE INDEX idx_customer_regis_date ON "Customer".customer USING btree (regis_d
 --
 
 CREATE INDEX idx_room_price ON "HotelDepartments".rooms USING btree (price);
-
-
---
--- Name: booking archive_deleted_booking; Type: TRIGGER; Schema: Booking; Owner: postgres
---
-
-CREATE TRIGGER archive_deleted_booking AFTER DELETE ON "Booking".booking FOR EACH ROW EXECUTE FUNCTION public.archive_deleted_booking();
 
 
 --

@@ -1,3 +1,7 @@
+
+
+
+
 Trigger for Preventing Booking Overlaps:
 --This trigger will prevent inserting a new booking if the room is already booked for the given date range. 
 --This enforces a user-defined constraint that a room cannot be double-booked.
