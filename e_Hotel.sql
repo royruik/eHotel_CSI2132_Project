@@ -80,8 +80,10 @@ BEGIN
         number_of_guests,
         problem_reported,
         special_notes,
-        archive_date
-    ) VALUES (
+        archive_date,
+        dp_id                     -- Make sure to include the dp_id column here
+    ) 
+    VALUES (
         OLD.booking_id,
         'Booking',
         OLD.customer_id,
@@ -90,11 +92,11 @@ BEGIN
         OLD.booking_start_date,
         OLD.booking_end_date,
         OLD.number_of_guests,
-        NULL,  -- Assuming you have fields for reporting problems and special notes
+        NULL,                    -- Assuming you have fields for reporting problems and special notes
         NULL,
-        CURRENT_DATE
+        CURRENT_DATE,
+        OLD.dp_id                -- Include the dp_id value from the deleted record
     );
-
     RETURN OLD;
 END;
 $$;
@@ -115,7 +117,7 @@ BEGIN
     -- Check if there are any bookings that overlap the date range for the same room
     SELECT EXISTS (
         SELECT 1 FROM "Booking".booking
-        WHERE room_id = NEW.room_id
+        WHERE room_id = NEW.room_id AND dp_id = NEW.dp_id
         AND booking_start_date < NEW.booking_end_date
         AND booking_end_date > NEW.booking_start_date
     ) INTO room_already_booked;
@@ -700,6 +702,13 @@ CREATE INDEX idx_customer_regis_date ON "Customer".customer USING btree (regis_d
 --
 
 CREATE INDEX idx_room_price ON "HotelDepartments".rooms USING btree (price);
+
+
+--
+-- Name: booking archive_deleted_booking; Type: TRIGGER; Schema: Booking; Owner: postgres
+--
+
+CREATE TRIGGER archive_deleted_booking AFTER DELETE ON "Booking".booking FOR EACH ROW EXECUTE FUNCTION public.archive_deleted_booking();
 
 
 --
