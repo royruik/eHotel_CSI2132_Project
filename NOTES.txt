@@ -1,0 +1,117 @@
+Trigger for Preventing Booking Overlaps:
+--This trigger will prevent inserting a new booking if the room is already booked for the given date range. 
+--This enforces a user-defined constraint that a room cannot be double-booked.
+
+CREATE OR REPLACE FUNCTION prevent_booking_overlap() RETURNS TRIGGER AS $$
+DECLARE
+    room_already_booked BOOLEAN;
+BEGIN
+    -- Check if there are any bookings that overlap the date range for the same room
+    SELECT EXISTS (
+        SELECT 1 FROM "Booking".booking
+        WHERE room_id = NEW.room_id
+        AND booking_start_date < NEW.booking_end_date
+        AND booking_end_date > NEW.booking_start_date
+    ) INTO room_already_booked;
+
+    IF room_already_booked THEN
+        RAISE EXCEPTION 'Room is already booked for the given dates';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+Trigger for Archiving Deleted Bookings:
+--Whenever a booking is deleted, this trigger will archive the record by inserting it into an archive table. 
+--This ensures that you maintain a history of all bookings, including those that are no longer active.
+
+CREATE TRIGGER prevent_booking_overlap
+BEFORE INSERT ON "Booking".booking
+FOR EACH ROW EXECUTE FUNCTION prevent_booking_overlap();
+
+CREATE OR REPLACE FUNCTION archive_deleted_booking() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO "Booking".archive (
+        original_action_id,
+        action_type,
+        customer_id,
+        room_id,
+        employee_id,
+        start_date,
+        end_date,
+        number_of_guests,
+        problem_reported,
+        special_notes,
+        archive_date
+    ) VALUES (
+        OLD.booking_id,
+        'Booking',
+        OLD.customer_id,
+        OLD.room_id,
+        OLD.employee_id,
+        OLD.booking_start_date,
+        OLD.booking_end_date,
+        OLD.number_of_guests,
+        NULL,  -- Assuming you have fields for reporting problems and special notes
+        NULL,
+        CURRENT_DATE
+    );
+
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER archive_deleted_booking
+AFTER DELETE ON "Booking".booking
+FOR EACH ROW EXECUTE FUNCTION archive_deleted_booking();
+
+
+
+
+Index on Customer Registration Date:
+Since there might be queries to fetch recent customers or perform operations based on the registration date, indexing this column would speed up such queries.
+
+CREATE INDEX idx_customer_regis_date ON "Customer".customer (regis_date);
+Justification: This index will speed up queries that involve searching for customers based on their registration date, especially useful for marketing efforts to target new customers or analyzing customer acquisition trends.
+
+Index on Booking Start and End Date:
+Bookings are often queried by their start and end dates to check for room availability, manage reservations, and prepare for guest arrivals and departures.
+
+CREATE INDEX idx_booking_dates ON "Booking".booking (booking_start_date, booking_end_date);
+Justification: This composite index will improve the performance of queries checking for booking overlaps, availability within a certain time frame, and reporting. Since both start and end dates are often used together in range queries, a composite index is more efficient than separate indexes.
+
+Index on Room Price:
+The room's price is a common search criterion for customers when they choose rooms, and thus an index on this column can make these searches faster.
+
+CREATE INDEX idx_room_price ON "HotelDepartments".rooms (price);
+Justification: This index is useful for accelerating queries that involve filtering or ordering rooms based on price, which is a common operation in any hotel booking system.
+
+Views: 
+
+CREATE OR REPLACE VIEW available_rooms_per_area AS
+SELECT
+    hd.dp_id AS department_id,
+    hd.dp_address AS department_address,
+    COUNT(r.room_no) AS available_rooms_count
+FROM
+    "HotelDepartments".hotel hd
+LEFT JOIN
+    "HotelDepartments".rooms r ON hd.dp_id = r.dp_id
+LEFT JOIN
+    "Booking".booking b ON r.room_no = b.room_id AND hd.dp_id = b.dp_id AND b.booking_end_date >= CURRENT_DATE
+WHERE
+    b.booking_id IS NULL OR (b.booking_end_date < CURRENT_DATE)
+GROUP BY
+    hd.dp_id, hd.dp_address
+ORDER BY
+    hd.dp_id;
+
+
+
+CREATE OR REPLACE VIEW TotalCapacityPerHotel AS
+SELECT hd.dp_id, hd.dp_address AS HotelAddress, SUM(r.capacity) AS TotalCapacity
+FROM "HotelDepartments".hotel hd
+JOIN "HotelDepartments".rooms r ON hd.dp_id = r.dp_id
+GROUP BY hd.dp_id, hd.dp_address
+ORDER BY hd.dp_id;

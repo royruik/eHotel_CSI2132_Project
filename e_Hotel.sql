@@ -61,6 +61,76 @@ CREATE SCHEMA "HotelDepartments";
 
 ALTER SCHEMA "HotelDepartments" OWNER TO postgres;
 
+--
+-- Name: archive_deleted_booking(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.archive_deleted_booking() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    INSERT INTO "Booking".archive (
+        original_action_id,
+        action_type,
+        customer_id,
+        room_id,
+        employee_id,
+        start_date,
+        end_date,
+        number_of_guests,
+        problem_reported,
+        special_notes,
+        archive_date
+    ) VALUES (
+        OLD.booking_id,
+        'Booking',
+        OLD.customer_id,
+        OLD.room_id,
+        OLD.employee_id,
+        OLD.booking_start_date,
+        OLD.booking_end_date,
+        OLD.number_of_guests,
+        NULL,  -- Assuming you have fields for reporting problems and special notes
+        NULL,
+        CURRENT_DATE
+    );
+
+    RETURN OLD;
+END;
+$$;
+
+
+ALTER FUNCTION public.archive_deleted_booking() OWNER TO postgres;
+
+--
+-- Name: prevent_booking_overlap(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.prevent_booking_overlap() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    room_already_booked BOOLEAN;
+BEGIN
+    -- Check if there are any bookings that overlap the date range for the same room
+    SELECT EXISTS (
+        SELECT 1 FROM "Booking".booking
+        WHERE room_id = NEW.room_id
+        AND booking_start_date < NEW.booking_end_date
+        AND booking_end_date > NEW.booking_start_date
+    ) INTO room_already_booked;
+
+    IF room_already_booked THEN
+        RAISE EXCEPTION 'Room is already booked for the given dates';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.prevent_booking_overlap() OWNER TO postgres;
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -81,7 +151,8 @@ CREATE TABLE "Booking".archive (
     number_of_guests integer,
     problem_reported character varying(255),
     special_notes character varying(255),
-    archive_date date
+    archive_date date,
+    dp_id integer NOT NULL
 );
 
 
@@ -120,7 +191,8 @@ CREATE TABLE "Booking".booking (
     employee_id integer,
     number_of_guests integer,
     booking_start_date date,
-    booking_end_date date
+    booking_end_date date,
+    dp_id integer NOT NULL
 );
 
 
@@ -160,7 +232,8 @@ CREATE TABLE "Booking".renting (
     check_in_date date,
     check_out_date date,
     number_of_guests integer,
-    payment_status character varying(100)
+    payment_status character varying(100),
+    dp_id integer NOT NULL
 );
 
 
@@ -247,7 +320,8 @@ CREATE TABLE "Employee".employees (
     full_name character varying(255) NOT NULL,
     address character varying(255),
     ssn_sin character varying(20),
-    role_id integer
+    role_id integer,
+    dp_id integer NOT NULL
 );
 
 
@@ -393,13 +467,16 @@ ALTER SEQUENCE "HotelDepartments".hotel_dp_id_seq OWNED BY "HotelDepartments".ho
 
 CREATE TABLE "HotelDepartments".rooms (
     room_no integer NOT NULL,
-    dp_id integer,
+    dp_id integer NOT NULL,
     price numeric(10,2),
     capacity integer,
     has_sea_view boolean,
     has_mountain_view boolean,
     can_extend_bed boolean,
-    problems_description text
+    problems_description text,
+    has_tv boolean DEFAULT false NOT NULL,
+    has_air_conditioning boolean DEFAULT false NOT NULL,
+    has_fridge boolean DEFAULT false NOT NULL
 );
 
 
@@ -426,6 +503,40 @@ ALTER SEQUENCE "HotelDepartments".rooms_room_no_seq OWNER TO postgres;
 
 ALTER SEQUENCE "HotelDepartments".rooms_room_no_seq OWNED BY "HotelDepartments".rooms.room_no;
 
+
+--
+-- Name: available_rooms_per_area; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.available_rooms_per_area AS
+ SELECT hd.dp_id AS department_id,
+    hd.dp_address AS department_address,
+    count(r.room_no) AS available_rooms_count
+   FROM (("HotelDepartments".hotel hd
+     LEFT JOIN "HotelDepartments".rooms r ON ((hd.dp_id = r.dp_id)))
+     LEFT JOIN "Booking".booking b ON (((r.room_no = b.room_id) AND (hd.dp_id = b.dp_id) AND (b.booking_end_date >= CURRENT_DATE))))
+  WHERE (b.booking_id IS NULL)
+  GROUP BY hd.dp_id, hd.dp_address
+  ORDER BY hd.dp_id;
+
+
+ALTER VIEW public.available_rooms_per_area OWNER TO postgres;
+
+--
+-- Name: totalcapacityperhotel; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.totalcapacityperhotel AS
+ SELECT hd.dp_id,
+    hd.dp_address AS hoteladdress,
+    sum(r.capacity) AS totalcapacity
+   FROM ("HotelDepartments".hotel hd
+     JOIN "HotelDepartments".rooms r ON ((hd.dp_id = r.dp_id)))
+  GROUP BY hd.dp_id, hd.dp_address
+  ORDER BY hd.dp_id;
+
+
+ALTER VIEW public.totalcapacityperhotel OWNER TO postgres;
 
 --
 -- Name: archive archive_id; Type: DEFAULT; Schema: Booking; Owner: postgres
@@ -567,7 +678,42 @@ ALTER TABLE ONLY "HotelDepartments".hotel
 --
 
 ALTER TABLE ONLY "HotelDepartments".rooms
-    ADD CONSTRAINT rooms_pkey PRIMARY KEY (room_no);
+    ADD CONSTRAINT rooms_pkey PRIMARY KEY (room_no, dp_id);
+
+
+--
+-- Name: idx_booking_dates; Type: INDEX; Schema: Booking; Owner: postgres
+--
+
+CREATE INDEX idx_booking_dates ON "Booking".booking USING btree (booking_start_date, booking_end_date);
+
+
+--
+-- Name: idx_customer_regis_date; Type: INDEX; Schema: Customer; Owner: postgres
+--
+
+CREATE INDEX idx_customer_regis_date ON "Customer".customer USING btree (regis_date);
+
+
+--
+-- Name: idx_room_price; Type: INDEX; Schema: HotelDepartments; Owner: postgres
+--
+
+CREATE INDEX idx_room_price ON "HotelDepartments".rooms USING btree (price);
+
+
+--
+-- Name: booking archive_deleted_booking; Type: TRIGGER; Schema: Booking; Owner: postgres
+--
+
+CREATE TRIGGER archive_deleted_booking AFTER DELETE ON "Booking".booking FOR EACH ROW EXECUTE FUNCTION public.archive_deleted_booking();
+
+
+--
+-- Name: booking prevent_booking_overlap; Type: TRIGGER; Schema: Booking; Owner: postgres
+--
+
+CREATE TRIGGER prevent_booking_overlap BEFORE INSERT ON "Booking".booking FOR EACH ROW EXECUTE FUNCTION public.prevent_booking_overlap();
 
 
 --
@@ -587,11 +733,11 @@ ALTER TABLE ONLY "Booking".archive
 
 
 --
--- Name: archive archive_room_id_fkey; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
+-- Name: archive archive_room_fk; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
 --
 
 ALTER TABLE ONLY "Booking".archive
-    ADD CONSTRAINT archive_room_id_fkey FOREIGN KEY (room_id) REFERENCES "HotelDepartments".rooms(room_no);
+    ADD CONSTRAINT archive_room_fk FOREIGN KEY (room_id, dp_id) REFERENCES "HotelDepartments".rooms(room_no, dp_id);
 
 
 --
@@ -611,11 +757,11 @@ ALTER TABLE ONLY "Booking".booking
 
 
 --
--- Name: booking booking_room_id_fkey; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
+-- Name: booking booking_room_fk; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
 --
 
 ALTER TABLE ONLY "Booking".booking
-    ADD CONSTRAINT booking_room_id_fkey FOREIGN KEY (room_id) REFERENCES "HotelDepartments".rooms(room_no);
+    ADD CONSTRAINT booking_room_fk FOREIGN KEY (room_id, dp_id) REFERENCES "HotelDepartments".rooms(room_no, dp_id);
 
 
 --
@@ -635,11 +781,11 @@ ALTER TABLE ONLY "Booking".renting
 
 
 --
--- Name: renting renting_room_id_fkey; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
+-- Name: renting renting_room_fk; Type: FK CONSTRAINT; Schema: Booking; Owner: postgres
 --
 
 ALTER TABLE ONLY "Booking".renting
-    ADD CONSTRAINT renting_room_id_fkey FOREIGN KEY (room_id) REFERENCES "HotelDepartments".rooms(room_no);
+    ADD CONSTRAINT renting_room_fk FOREIGN KEY (room_id, dp_id) REFERENCES "HotelDepartments".rooms(room_no, dp_id);
 
 
 --
@@ -648,6 +794,14 @@ ALTER TABLE ONLY "Booking".renting
 
 ALTER TABLE ONLY "Employee".employeerole
     ADD CONSTRAINT employeerole_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES "Employee".employees(employee_id);
+
+
+--
+-- Name: employees fk_employee_dp_id; Type: FK CONSTRAINT; Schema: Employee; Owner: postgres
+--
+
+ALTER TABLE ONLY "Employee".employees
+    ADD CONSTRAINT fk_employee_dp_id FOREIGN KEY (dp_id) REFERENCES "HotelDepartments".hotel(dp_id);
 
 
 --
